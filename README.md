@@ -1,31 +1,33 @@
 # openclaw-session-viewer
 
-一个纯 Python 的 OpenClaw session（jsonl）聊天记录浏览器：读取 `sessions.json` 找到当前会话对应的 `sessionFile`，按 `id -> parentId` 链条还原成一个“聊天窗口”，并在文件追加/切换时实时刷新页面。
+Language: [English](README.md) | [中文](README.zh.md)
 
-## 功能
+A pure-Python OpenClaw session (jsonl) chat viewer. It reads `sessions.json` to locate the active `sessionFile`, reconstructs a “chat window” by following the `id -> parentId` chain, and refreshes the page in real time when the jsonl file grows or when `sessions.json` switches to a different `sessionFile`.
 
-- 按 `id/parentId` 还原对话链条（不是简单按时间排序）
-- 实时刷新：jsonl 追加新记录会自动显示；`sessions.json` 指向的 `sessionFile` 变化也会自动切换
-- 统一展示多种内容块：text / thinking / toolCall / toolResult / 原始 JSON
-- LLM 记录增强显示：provider/model、token input/output、stopReason、错误信息
-- Δ 耗时显示：记录间隔（下一条时间 - 当前条时间）并按快慢着色（超长间隔会隐藏，避免会话结束导致的误判）
-- 支持局域网访问：`--host 0.0.0.0`
+## Features
 
-## 依赖
+- Reconstructs conversation by `id/parentId` chain (not just timestamp order)
+- Live updates: appends in jsonl show up automatically; changes in `sessions.json` that point to a new `sessionFile` are auto-switched
+- Unified rendering for blocks: text / thinking / toolCall / toolResult / raw JSON
+- LLM metadata: provider/model, token input/output, stopReason, error message
+- Δ timing: shows time gaps (next record time - current record time) with speed-based colors (very long gaps are hidden to avoid “session ended” false signals)
+- LAN access: `--host 0.0.0.0`
 
-- Python 3.10+（使用了 `list[...]` 这类新语法）
+## Requirements
 
-## 运行
+- Python 3.10+ (uses newer syntax like `list[...]`)
 
-在本目录下执行：
+## Run
+
+Run from this directory:
 
 ```bash
 python3 session_viewer.py
 ```
 
-启动后会打印一个 URL（默认 `http://127.0.0.1:8765/`），用浏览器打开即可。
+It prints a URL on startup (default `http://127.0.0.1:8765/`). Open it in your browser.
 
-### 常用参数
+### Common options
 
 ```bash
 python3 session_viewer.py \
@@ -37,26 +39,26 @@ python3 session_viewer.py \
   --port 8765
 ```
 
-- `--sessions-json`: OpenClaw 的 sessions 索引文件
-- `--session-key`: sessions.json 里的 key（例如 `agent:main:main`）
-- `--count`/`-n`: 页面最多显示多少条（沿链条截断）
-- `--poll`: 轮询间隔（秒）
-- `--host`/`--port`: HTTP 服务监听地址
+- `--sessions-json`: OpenClaw sessions index file
+- `--session-key`: key in sessions.json (e.g. `agent:main:main`)
+- `--count`/`-n`: maximum number of items to render (truncates along the chain)
+- `--poll`: polling interval (seconds)
+- `--host`/`--port`: HTTP bind address
 
-### 局域网访问
+### LAN access
 
 ```bash
 python3 session_viewer.py --host 0.0.0.0 --port 8765
 ```
 
-然后用同一局域网内设备访问：`http://<你的机器IP>:8765/`
+Then access it from another device on the same network: `http://<your-ip>:8765/`
 
-## HTTP 接口
+## HTTP endpoints
 
-- `/`：页面
-- `/state`：返回当前状态 JSON（包含 items）
-- `/events`：SSE（Server-Sent Events），每次状态变化推送一次完整 state
+- `/`: page
+- `/state`: current state as JSON (includes items)
+- `/events`: SSE (Server-Sent Events), pushes a full state on each change
 
-## 文件说明
+## Files
 
-- [session_viewer.py](file:///Users/speedx/openclaw-sessions/openclaw-session-viewer/session_viewer.py)：服务端 + 前端页面（单文件）
+- [session_viewer.py](file:///Users/speedx/openclaw-sessions/openclaw-session-viewer/session_viewer.py): server + frontend (single file)

@@ -344,7 +344,7 @@ def _build_state(sessions_json_path: str, session_key: str, max_count: int) -> d
 
 
 HTML = """<!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -506,7 +506,7 @@ HTML = """<!doctype html>
   </div>
   <div class="wrap">
     <div class="chat">
-      <div class="chatbar"><span>聊天</span><span class="hint" id="count"></span></div>
+      <div class="chatbar"><span>Chat</span><span class="hint" id="count"></span></div>
       <div class="scroll" id="chat"></div>
     </div>
   </div>
