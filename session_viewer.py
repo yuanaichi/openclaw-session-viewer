@@ -251,19 +251,43 @@ def _resolve_session_file(sessions_json_path: str, session_key: str) -> str:
     return session_file
 
 
-def _index_jsonl(session_file: str) -> tuple[dict[str, ParsedItem], Optional[ParsedItem], int]:
+def _read_tail_lines(session_file: str, max_lines: int) -> tuple[list[str], int, str]:
+    try:
+        with open(session_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            if end <= 0:
+                return [], 0, ""
+            pos = end
+            buf = b""
+            need_nl = max(0, max_lines) + 1
+            while pos > 0 and buf.count(b"\n") < need_nl:
+                step = 65536 if pos >= 65536 else pos
+                pos -= step
+                f.seek(pos)
+                chunk = f.read(step)
+                buf = chunk + buf
+            raw_lines = buf.splitlines()
+            if max_lines > 0 and len(raw_lines) > max_lines:
+                raw_lines = raw_lines[-max_lines:]
+            lines = [b.decode("utf-8", errors="replace") for b in raw_lines]
+            return lines, end, ""
+    except FileNotFoundError:
+        return [], 0, f"sessionFile not found: {session_file}"
+    except Exception as e:
+        return [], 0, f"failed to read sessionFile: {session_file} ({e})"
+
+
+def _index_jsonl(session_file: str, max_lines: int) -> tuple[dict[str, ParsedItem], Optional[ParsedItem], int]:
     by_id: dict[str, ParsedItem] = {}
     tail: Optional[ParsedItem] = None
-    order = 0
-    with open(session_file, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            order += 1
-            item = _parse_jsonl_line(line, order=order)
-            if item is None:
-                continue
-            by_id[item.id] = item
-            tail = item
-        file_pos = f.tell()
+    lines, file_pos, _err = _read_tail_lines(session_file, max(1, max_lines))
+    for i, line in enumerate(lines, start=1):
+        item = _parse_jsonl_line(line, order=i)
+        if item is None:
+            continue
+        by_id[item.id] = item
+        tail = item
     return by_id, tail, file_pos
 
 
@@ -318,8 +342,34 @@ def _item_to_view(item: ParsedItem, span_ms_to_next: Optional[int]) -> dict[str,
 
 
 def _build_state(sessions_json_path: str, session_key: str, max_count: int) -> dict[str, Any]:
-    session_file = _resolve_session_file(sessions_json_path, session_key)
-    by_id, tail, file_pos = _index_jsonl(session_file)
+    session_file = ""
+    state_err = ""
+    try:
+        session_file = _resolve_session_file(sessions_json_path, session_key)
+    except Exception as e:
+        state_err = f"failed to resolve sessionFile: {e}"
+        return {
+            "sessionKey": session_key,
+            "sessionsJson": sessions_json_path,
+            "sessionFile": "",
+            "filePos": 0,
+            "tailId": None,
+            "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "items": [],
+            "error": state_err,
+        }
+
+    lines, file_pos, err = _read_tail_lines(session_file, max(1, max_count))
+    if err:
+        state_err = err
+    by_id: dict[str, ParsedItem] = {}
+    tail: Optional[ParsedItem] = None
+    for i, line in enumerate(lines, start=1):
+        item = _parse_jsonl_line(line, order=i)
+        if item is None:
+            continue
+        by_id[item.id] = item
+        tail = item
     chain = _build_chain(tail=tail, by_id=by_id, max_count=max_count)
     spans: list[Optional[int]] = []
     for i, it in enumerate(chain):
@@ -340,6 +390,7 @@ def _build_state(sessions_json_path: str, session_key: str, max_count: int) -> d
         "tailId": tail.id if tail else None,
         "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "items": [_item_to_view(it, spans[i]) for i, it in enumerate(chain)],
+        "error": state_err,
     }
 
 
@@ -626,10 +677,12 @@ HTML = """<!doctype html>
 
   function render(state) {
     els.badge.textContent = `${state.sessionKey} · ${state.sessionFile}`;
-    const items = Array.isArray(state.items) ? state.items : [];
+    const itemsAll = Array.isArray(state.items) ? state.items : [];
+    const items = itemsAll.length > 50 ? itemsAll.slice(-50) : itemsAll;
     const auto = nearBottom(els.chat);
-    els.chat.innerHTML = items.map(renderItem).join('') || `<div class="center"><div class="sysline">暂无消息</div></div>`;
-    els.count.textContent = `${items.length} 条`;
+    const emptyText = state && state.error ? `Error: ${state.error}` : 'No messages';
+    els.chat.innerHTML = items.map(renderItem).join('') || `<div class="center"><div class="sysline">${escapeHtml(emptyText)}</div></div>`;
+    els.count.textContent = `${items.length} items`;
     if (auto) els.chat.scrollTop = els.chat.scrollHeight;
   }
 
@@ -678,15 +731,17 @@ class App:
             sessions_mtime = os.stat(self.sessions_json).st_mtime
         except Exception:
             sessions_mtime = None
-        try:
-            jsonl_mtime = os.stat(state["sessionFile"]).st_mtime
-        except Exception:
-            jsonl_mtime = None
+        sf = state.get("sessionFile")
+        if isinstance(sf, str) and sf:
+            try:
+                jsonl_mtime = os.stat(sf).st_mtime
+            except Exception:
+                jsonl_mtime = None
 
         with self._lock:
             self._state = state
             self._sessions_mtime = sessions_mtime
-            self._session_file = state["sessionFile"]
+            self._session_file = sf if isinstance(sf, str) and sf else None
             self._jsonl_mtime = jsonl_mtime
 
     def get_state(self) -> dict[str, Any]:
@@ -707,7 +762,7 @@ class App:
                 prev_sessions_mtime = self._sessions_mtime
                 prev_jsonl_mtime = self._jsonl_mtime
 
-            sessions_changed = sessions_mtime is not None and prev_sessions_mtime is not None and sessions_mtime != prev_sessions_mtime
+            sessions_changed = (sessions_mtime != prev_sessions_mtime) and (sessions_mtime is not None or prev_sessions_mtime is not None)
             if sessions_changed:
                 self._load_state()
                 return self.get_state()
@@ -717,7 +772,7 @@ class App:
                 resolved_session_file = _resolve_session_file(self.sessions_json, self.session_key)
             except Exception:
                 resolved_session_file = None
-            if resolved_session_file and session_file and resolved_session_file != session_file:
+            if resolved_session_file and resolved_session_file != session_file:
                 self._load_state()
                 return self.get_state()
 
@@ -728,11 +783,7 @@ class App:
                 except Exception:
                     jsonl_mtime = None
 
-            jsonl_changed = (
-                jsonl_mtime is not None
-                and prev_jsonl_mtime is not None
-                and jsonl_mtime != prev_jsonl_mtime
-            )
+            jsonl_changed = (jsonl_mtime != prev_jsonl_mtime) and (jsonl_mtime is not None or prev_jsonl_mtime is not None)
             if jsonl_changed:
                 self._load_state()
                 return self.get_state()
@@ -762,7 +813,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sessions-json", default="/Users/speedx/.openclaw/agents/main/sessions/sessions.json")
     ap.add_argument("--session-key", default="agent:main:main")
-    ap.add_argument("-n", "--max", "--count", dest="max", type=int, default=500)
+    ap.add_argument("-n", "--max", "--count", dest="max", type=int, default=50)
     ap.add_argument("--poll", type=float, default=0.25)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
